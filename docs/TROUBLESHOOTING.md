@@ -19,6 +19,60 @@ docker exec gluetun wget -qO- https://ifconfig.me
 
 If that shows a different IP from your home connection, gluetun is fine — leave the warnings alone. If it shows your real IP (or times out), see the gluetun logs for `tunnel down`, `auth failed`, or the container restarting — those are the actual failure modes worth chasing.
 
+## Indexers: New Releases Never Grab (VPN Exit Country Blocked)
+
+**Symptom:** A monitored episode/movie that is clearly out (aired days ago) never gets grabbed. Sonarr/Radarr history is empty for it, nothing is in the queue, and an interactive search returns **0 releases**. Prowlarr health shows `Indexers unavailable due to failures for more than 6 hours: EZTV` (or another indexer), and that indexer is auto-disabled.
+
+**Cause:** The VPN exit is in a country that legally blocks the indexer. Our stack defaults to `VPN_COUNTRIES=United Kingdom`, and the UK now serves Cloudflare-level legal blocks for several public torrent indexers. The block returns **HTTP 451** with a body like:
+
+```
+In response to a legal order, Cloudflare has taken steps to limit access
+to this website through Cloudflare's pass-through security and CDN services
+within United Kingdom.
+```
+
+Prowlarr (and all `*arr` indexer traffic) rides the gluetun tunnel, so every query exits through the blocked country. EZTV — the indexer most likely to carry a niche/new TV release — is the usual casualty.
+
+**Diagnose:**
+```bash
+# 1. Confirm the VPN exit country
+docker exec gluetun wget -qO- https://ipinfo.io/json   # look at "country"
+
+# 2. Test the failing indexer in Prowlarr (id 3 = EZTV here; GET /indexer to list ids)
+PK=<prowlarr-apikey>
+curl -s -X POST "http://localhost:9696/api/v1/indexer/test?apikey=$PK" \
+  -H "Content-Type: application/json" \
+  -d "$(curl -s http://localhost:9696/api/v1/indexer/3?apikey=$PK)"
+# "UnavailableForLegalReasons" / 451 in the error = legal block, not a dead indexer
+
+# 3. Which indexers are in backoff
+curl -s "http://localhost:9696/api/v1/indexerstatus?apikey=$PK"
+```
+
+**Fix — switch the VPN exit out of the blocking country:**
+```bash
+cd /volume1/docker/arr-stack
+cp .env ".env.bak-$(date +%Y%m%d-%H%M%S)"          # .env is gitignored — edit on the NAS
+sed -i 's/^VPN_COUNTRIES=United Kingdom$/VPN_COUNTRIES=Netherlands/' .env
+
+# Recreate gluetun AND every container sharing its network namespace
+# (sonarr, radarr, prowlarr, qbittorrent, sabnzbd, flaresolverr — all bounce together)
+docker compose -f docker-compose.arr-stack.yml up -d
+
+# Verify the new exit + that the indexer is reachable again
+docker exec gluetun wget -qO- "https://eztvx.to/api/get-torrents?limit=1"   # HTTP 200 = unblocked
+
+# Clear the indexer backoff so Prowlarr queries it again (disable then re-enable)
+DEF=$(curl -s "http://localhost:9696/api/v1/indexer/3?apikey=$PK")
+echo "$DEF" | python3 -c 'import sys,json;d=json.load(sys.stdin);d["enable"]=False;print(json.dumps(d))' \
+  | curl -s -X PUT "http://localhost:9696/api/v1/indexer/3?apikey=$PK" -H "Content-Type: application/json" -d @-
+echo "$DEF" | curl -s -X PUT "http://localhost:9696/api/v1/indexer/3?apikey=$PK" -H "Content-Type: application/json" -d @-
+```
+
+Surfshark's WireGuard key is account-wide, so changing only `VPN_COUNTRIES` is enough — gluetun picks a server in the new country with the same key. No new config from Surfshark is needed. The VPN only covers the download stack (qBittorrent/usenet/indexers/`*arr`), **not** Jellyfin, so a non-UK exit has no downside for playback. Leave it on a non-blocking country (e.g. Netherlands) to avoid recurrence; revert with the `.env` backup if ever needed.
+
+> **Diagnostic gotcha — Prowlarr masks API keys.** `GET /api/v1/indexer/<id>` returns indexer secrets as a short placeholder, **not** the real key. If you curl an indexer's newznab API directly using that masked value you'll get `<error code="102" description="Empty API Key"/>` and zero results — which looks like a dead indexer but isn't. Prowlarr's own searches use the real key (32 chars for NZBgeek). Read the real value from `prowlarr.db` (`Indexers.Settings` JSON) before testing by hand, or just trust Prowlarr's search rather than a manual curl.
+
 ## SABnzbd: Stuck Unpack Loop
 
 **Symptom:** Radarr shows "Downloading" at 100% with 0 B file size. SABnzbd UI is unresponsive or Save fails. Logs show `Unpacked files []` repeatedly.
