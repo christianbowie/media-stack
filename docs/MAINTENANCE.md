@@ -186,4 +186,14 @@ docker compose -f docker-compose.arr-stack.yml pull
 docker compose -f docker-compose.arr-stack.yml up -d
 ```
 
+**Before bumping a service that owns a database** (Pi-hole's gravity/FTL config, the \*arrs' SQLite), back up its config volume first — a minor-version bump can migrate the DB irreversibly:
+
+```bash
+docker run --rm -v <project>_<service>-config:/src:ro -v "$PWD/backups":/bak \
+  alpine tar czf /bak/<service>-config-backup-$(date +%Y%m%d).tgz -C /src .
+# e.g. arr-stack_pihole-etc-pihole  →  backups/pihole-config-backup-YYYYMMDD.tgz
+```
+
+**Pi-hole and Cloudflared notes:** recreating Pi-hole briefly drops LAN DNS (~20-30s) — expected; verify `.lan` and external resolution after. Cloudflared runs as its **own compose project** (`-f docker-compose.cloudflared.yml`), so bump it with that file, not via the arr-stack project.
+
 See [Upgrading Guide](UPGRADING.md) for version-specific upgrade notes.
