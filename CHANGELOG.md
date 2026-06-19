@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.22] - 2026-06-19
+
+### Changed
+- **Cloudflared** 2026.6.0 → 2026.6.1. Verified on the live tunnel (container healthy, Jellyfin returned HTTP 302 through the tunnel via HTTPS).
+- **Pi-hole** 2026.05.0 → 2026.06.0. Config volume backed up before the bump; verified after recreate (FTL healthy in ~24s, `.lan` domains and external DNS both resolving).
+
 ## [1.7.21] - 2026-06-19
 
 ### Fixed
